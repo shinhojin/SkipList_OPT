@@ -62,6 +62,8 @@ class SkipList {
   // Returns true iff an entry that compares equal to key is in the list.
   bool Contains(const Key& key) const;
 
+  bool Contains_Cursor(const Key& key) const; // Signal.Jin
+
   // Return estimated number of entries smaller than `key`.
   uint64_t EstimateCount(const Key& key) const;
 
@@ -122,6 +124,8 @@ class SkipList {
   Allocator* const allocator_;    // Allocator used for allocations of nodes
 
   Node* const head_;
+  mutable Node* single_cursor_; // Cursor based skiplist optimization - Signal.Jin
+  mutable int cs_level; // To store single cursor's top level - Signal.Jin
 
   // Modified only by Insert().  Read racily by readers, but stale
   // values are ok.
@@ -151,6 +155,8 @@ class SkipList {
   // Returns the earliest node with a key >= key.
   // Return nullptr if there is no such node.
   Node* FindGreaterOrEqual(const Key& key) const;
+
+  Node* FindGreaterOrEqual_Cursor(const Key& key) const; // Signal.Jin
 
   // Return the latest node with a key < key.
   // Return head_ if there is no such node.
@@ -331,6 +337,56 @@ typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
 }
 
 template<typename Key, class Comparator>
+typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
+  FindGreaterOrEqual_Cursor(const Key& key) const { // Signal.Jin
+  // Note: This function is a single cursor algorithm in a skip-list
+  // The role of curosr is to remember where it was previsouly
+  // lookup to.
+  // In a single-cursor, only one cursor can exist at a time. - Signal.Jin
+  
+  Node* x = head_;
+  int level = GetMaxHeight() - 1;
+  Node* last_bigger = nullptr;
+  if (compare_(single_cursor_->key, head_->key) > 0) {
+    if (compare_(single_cursor_->key, key) < 0) {
+      x = single_cursor_;
+      level = cs_level;
+    } else if (compare_(single_cursor_->key, key) == 0) {
+      return single_cursor_;
+    }
+    // We can start lookup from a cursor.
+    // Becasue there is a possibility of having the
+    // shortest distance from the cursor. - Signal.Jin
+  }
+  while (true) {
+    assert(x != nullptr);
+    Node* next = x->Next(level);
+    // Make sure the lists are sorted
+    assert(x == head_ || next == nullptr || KeyIsAfterNode(next->key, x));
+    // Make sure we haven't overshot during our search
+    if (next != nullptr) {
+      assert(x == head_ || KeyIsAfterNode(key, x));
+    }
+    int cmp = (next == nullptr || next == last_bigger)
+        ? 1 : compare_(next->key, key);
+    if (cmp == 0 || (cmp > 0 && level == 0)) {
+      if (next != nullptr) {
+        single_cursor_ = next;
+        cs_level = level;
+      }
+      return next;
+    } else if (cmp < 0) {
+      // Keep searching in this list
+      x = next;
+    } else {
+      // Switch to next list, reuse compare_() result
+      last_bigger = next;
+      level--;
+    }
+  }
+}
+
+template<typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
 SkipList<Key, Comparator>::FindLessThan(const Key& key, Node** prev) const {
   Node* x = head_;
@@ -414,6 +470,7 @@ SkipList<Key, Comparator>::SkipList(const Comparator cmp, Allocator* allocator,
       compare_(cmp),
       allocator_(allocator),
       head_(NewNode(0 /* any key will do */, max_height)),
+      single_cursor_(NewNode(0, max_height)),
       max_height_(1),
       prev_height_(1) {
   assert(max_height > 0 && kMaxHeight_ == static_cast<uint32_t>(max_height));
@@ -486,6 +543,18 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
 template<typename Key, class Comparator>
 bool SkipList<Key, Comparator>::Contains(const Key& key) const {
   Node* x = FindGreaterOrEqual(key);
+  if (x != nullptr && Equal(key, x->key)) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+// The role of this function is to call
+// FindGreatorOrEqual_Cursor - Signal.Jin
+template<typename Key, class Comparator>
+bool SkipList<Key, Comparator>::Contains_Cursor(const Key& key) const {
+  Node* x = FindGreaterOrEqual_Cursor(key);
   if (x != nullptr && Equal(key, x->key)) {
     return true;
   } else {
