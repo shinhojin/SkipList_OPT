@@ -38,6 +38,9 @@
 #include "port/port.h"
 #include "util/random.h"
 
+//static void* last_loc; // Signal.Jin
+//static int count = 0;
+
 namespace ROCKSDB_NAMESPACE {
 
 template<typename Key, class Comparator>
@@ -45,12 +48,21 @@ class SkipList {
  private:
   struct Node;
 
+  typedef struct T_node {
+    Node* SL_node;
+    struct T_node* left;
+    struct T_node* right;
+    int key;
+  } Tnode; // Tree node structure - Signal.Jin
+
+  Tnode* root; // Root of Tree structure - Signal.Jin
+
  public:
   // Create a new SkipList object that will use "cmp" for comparing keys,
   // and will allocate memory using "*allocator".  Objects allocated in the
   // allocator must remain allocated for the lifetime of the skiplist object.
   explicit SkipList(Comparator cmp, Allocator* allocator,
-                    int32_t max_height = 12, int32_t branching_factor = 4);
+                    int32_t max_height = 5, int32_t branching_factor = 4);
   // No copying allowed
   SkipList(const SkipList&) = delete;
   void operator=(const SkipList&) = delete;
@@ -59,10 +71,15 @@ class SkipList {
   // REQUIRES: nothing that compares equal to key is currently in the list.
   void Insert(const Key& key);
 
+  void Insert_B2hSL(const Key& key); // B2hSL insert function - Signal.Jin
+
+  uint64_t Estimate_Max() const; // Signal.Jin
+
   // Returns true iff an entry that compares equal to key is in the list.
   bool Contains(const Key& key) const;
 
-  bool Contains_Cursor(const Key& key) const; // Signal.Jin
+  // Call a FindGreatorOrEqual_Cursor function - Signal.Jin
+  bool Contains_Cursor(const Key& key) const;
 
   // Return estimated number of entries smaller than `key`.
   uint64_t EstimateCount(const Key& key) const;
@@ -124,7 +141,8 @@ class SkipList {
   Allocator* const allocator_;    // Allocator used for allocations of nodes
 
   Node* const head_;
-  mutable Node* single_cursor_; // Cursor based skiplist optimization - Signal.Jin
+  
+  mutable Node* single_cursor_; // Single Cursor based skiplist optimization - Signal.Jin
   mutable int cs_level; // To store single cursor's top level - Signal.Jin
 
   // Modified only by Insert().  Read racily by readers, but stale
@@ -157,6 +175,9 @@ class SkipList {
   Node* FindGreaterOrEqual(const Key& key) const;
 
   Node* FindGreaterOrEqual_Cursor(const Key& key) const; // Signal.Jin
+
+  void AddTreeNode(const Key& key, Node* M_target) const; // Signal.Jin
+  Tnode* SearchTreeNode(const Key& key) const; // Signal.Jin
 
   // Return the latest node with a key < key.
   // Return head_ if there is no such node.
@@ -211,6 +232,8 @@ typename SkipList<Key, Comparator>::Node*
 SkipList<Key, Comparator>::NewNode(const Key& key, int height) {
   char* mem = allocator_->AllocateAligned(
       sizeof(Node) + sizeof(std::atomic<Node*>) * (height - 1));
+  /*char* mem = allocator_->AllocateAligned(
+      sizeof(Node) + sizeof(Node*) * (height - 1));*/
   return new (mem) Node(key);
 }
 
@@ -311,12 +334,16 @@ typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
   // to exit early on equality and the result wouldn't even be correct.
   // A concurrent insert might occur after FindLessThan(key) but before
   // we get a chance to call Next(0).
+  
   Node* x = head_;
   int level = GetMaxHeight() - 1;
   Node* last_bigger = nullptr;
   while (true) {
     assert(x != nullptr);
     Node* next = x->Next(level);
+    /*if (next != nullptr) {
+      PREFETCH(next->Next(level), 0, 1);
+    }*/
     // Make sure the lists are sorted
     assert(x == head_ || next == nullptr || KeyIsAfterNode(next->key, x));
     // Make sure we haven't overshot during our search
@@ -340,24 +367,55 @@ template<typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
   FindGreaterOrEqual_Cursor(const Key& key) const { // Signal.Jin
   // Note: This function is a single cursor algorithm in a skip-list
-  // The role of curosr is to remember where it was previsouly
+  // The role of cursor is to remember where it was previsouly
   // lookup to.
   // In a single-cursor, only one cursor can exist at a time. - Signal.Jin
   
   Node* x = head_;
   int level = GetMaxHeight() - 1;
   Node* last_bigger = nullptr;
-  if (compare_(single_cursor_->key, head_->key) > 0) {
-    if (compare_(single_cursor_->key, key) < 0) {
-      x = single_cursor_;
-      level = cs_level;
-    } else if (compare_(single_cursor_->key, key) == 0) {
-      return single_cursor_;
+  /*
+  // Single Cursor Opt 1.
+  if (cs_level != -1) {
+    if (cs_level <= level/2) {
+      // Nothing to do. - Signal.Jin
+    } else {
+      if (compare_(single_cursor_->key, head_->key) > 0) {
+        if (compare_(single_cursor_->key, key) < 0) {
+          x = single_cursor_;
+          level = cs_level;
+        } else if (compare_(single_cursor_->key, key) == 0) {
+          return single_cursor_;
+        }
+        // We can start lookup from a cursor.
+        // Becasue there is a possibility of having the
+        // shortest distance from the cursor. - Signal.Jin
+      }
     }
-    // We can start lookup from a cursor.
-    // Becasue there is a possibility of having the
-    // shortest distance from the cursor. - Signal.Jin
+  } 
+  // If Cursor's node height is too low,
+  // Will start from the head node. - Signal.Jin
+  */
+
+  // Single Cursor Opt 2
+  if (cs_level != -1) {
+    if ((key - single_cursor_->key) > 9) { /*TODO: Setting Value by number of inserts*/
+      // Nothing to do. - Signal.Jin
+    } else {
+      if (compare_(single_cursor_->key, head_->key) > 0) {
+        if (compare_(single_cursor_->key, key) < 0) {
+          x = single_cursor_;
+          level = cs_level;
+        } else if (compare_(single_cursor_->key, key) == 0) {
+          return single_cursor_;
+        }
+        // We can start lookup from a cursor.
+        // Becasue there is a possibility of having the
+        // shortest distance from the cursor. - Signal.Jin
+      }
+    }
   }
+
   while (true) {
     assert(x != nullptr);
     Node* next = x->Next(level);
@@ -461,6 +519,22 @@ uint64_t SkipList<Key, Comparator>::EstimateCount(const Key& key) const {
 }
 
 template <typename Key, class Comparator>
+uint64_t SkipList<Key, Comparator>::Estimate_Max() const {
+  uint64_t count = 0;
+
+  Node* x = head_;
+  int level = GetMaxHeight() - 1;
+  while (true) {
+    Node* next = x->Next(level);
+    if (next == nullptr) {
+      return count;
+    }
+    count++;
+    x = next;
+  }
+}
+
+template <typename Key, class Comparator>
 SkipList<Key, Comparator>::SkipList(const Comparator cmp, Allocator* allocator,
                                     int32_t max_height,
                                     int32_t branching_factor)
@@ -471,6 +545,7 @@ SkipList<Key, Comparator>::SkipList(const Comparator cmp, Allocator* allocator,
       allocator_(allocator),
       head_(NewNode(0 /* any key will do */, max_height)),
       single_cursor_(NewNode(0, max_height)),
+      cs_level(-1),
       max_height_(1),
       prev_height_(1) {
   assert(max_height > 0 && kMaxHeight_ == static_cast<uint32_t>(max_height));
@@ -512,8 +587,61 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
   // Our data structure does not allow duplicate insertion
   assert(prev_[0]->Next(0) == nullptr || !Equal(key, prev_[0]->Next(0)->key));
 
-  int height = RandomHeight();
-  if (height > GetMaxHeight()) {
+  int height = RandomHeight(); // Height is defined randomly - Lee Jeyeon.
+  if (height > GetMaxHeight()) { // Change Total skiplist heigth - Lee Jeyeon.
+    for (int i = GetMaxHeight(); i < height; i++) {
+      prev_[i] = head_;
+    }
+    //fprintf(stderr, "Change height from %d to %d\n", max_height_, height);
+
+    // It is ok to mutate max_height_ without any synchronization
+    // with concurrent readers.  A concurrent reader that observes
+    // the new value of max_height_ will see either the old value of
+    // new level pointers from head_ (nullptr), or a new value set in
+    // the loop below.  In the former case the reader will
+    // immediately drop to the next level since nullptr sorts after all
+    // keys.  In the latter case the reader will use the new node.
+    max_height_.store(height, std::memory_order_relaxed);
+  }
+  
+  Node* x = NewNode(key, height);
+  for (int i = 0; i < height; i++) {
+    // NoBarrier_SetNext() suffices since we will add a barrier when
+    // we publish a pointer to "x" in prev[i].
+    x->NoBarrier_SetNext(i, prev_[i]->NoBarrier_Next(i));
+    prev_[i]->SetNext(i, x);
+  }
+
+  prev_[0] = x;
+  prev_height_ = height;
+}
+
+template<typename Key, class Comparator>
+void SkipList<Key, Comparator>::Insert_B2hSL(const Key& key) {
+  // fast path for sequential insertion
+  if (!KeyIsAfterNode(key, prev_[0]->NoBarrier_Next(0)) &&
+      (prev_[0] == head_ || KeyIsAfterNode(key, prev_[0]))) {
+    assert(prev_[0] != head_ || (prev_height_ == 1 && GetMaxHeight() == 1));
+
+    // Outside of this method prev_[1..max_height_] is the predecessor
+    // of prev_[0], and prev_height_ refers to prev_[0].  Inside Insert
+    // prev_[0..max_height - 1] is the predecessor of key.  Switch from
+    // the external state to the internal
+    for (int i = 1; i < prev_height_; i++) {
+      prev_[i] = prev_[0];
+    }
+  } else {
+    // TODO(opt): we could use a NoBarrier predecessor search as an
+    // optimization for architectures where memory_order_acquire needs
+    // a synchronization instruction.  Doesn't matter on x86
+    FindLessThan(key, prev_);
+  }
+
+  // Our data structure does not allow duplicate insertion
+  assert(prev_[0]->Next(0) == nullptr || !Equal(key, prev_[0]->Next(0)->key));
+
+  int height = RandomHeight(); // Height is defined randomly - Lee Jeyeon.
+  if (height > GetMaxHeight()) { // Change Total skiplist height - Lee Jeyeon.
     for (int i = GetMaxHeight(); i < height; i++) {
       prev_[i] = head_;
     }
@@ -530,12 +658,23 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
   }
 
   Node* x = NewNode(key, height);
-  for (int i = 0; i < height; i++) {
-    // NoBarrier_SetNext() suffices since we will add a barrier when
-    // we publish a pointer to "x" in prev[i].
-    x->NoBarrier_SetNext(i, prev_[i]->NoBarrier_Next(i));
-    prev_[i]->SetNext(i, x);
+  if (height == kMaxHeight_) {
+    for (int i = 0; i < height-1; i++) {
+      // NoBarrier_SetNext() suffices since we will add a barrier when
+      // we publish a pointer to "x" in prev[i].
+      x->NoBarrier_SetNext(i, prev_[i]->NoBarrier_Next(i));
+      prev_[i]->SetNext(i, x);
+    }
+  } // If height == kMaxHeight, highest level node turn into tree node - Signal.Jin
+  else {
+    for (int i = 0; i < height; i++) {
+      // NoBarrier_SetNext() suffices since we will add a barrier when
+      // we publish a pointer to "x" in prev[i].
+      x->NoBarrier_SetNext(i, prev_[i]->NoBarrier_Next(i));
+      prev_[i]->SetNext(i, x);
+    }
   }
+
   prev_[0] = x;
   prev_height_ = height;
 }
@@ -550,8 +689,6 @@ bool SkipList<Key, Comparator>::Contains(const Key& key) const {
   }
 }
 
-// The role of this function is to call
-// FindGreatorOrEqual_Cursor - Signal.Jin
 template<typename Key, class Comparator>
 bool SkipList<Key, Comparator>::Contains_Cursor(const Key& key) const {
   Node* x = FindGreaterOrEqual_Cursor(key);
@@ -560,6 +697,6 @@ bool SkipList<Key, Comparator>::Contains_Cursor(const Key& key) const {
   } else {
     return false;
   }
-}
+} // Signal.Jin
 
 }  // namespace ROCKSDB_NAMESPACE
