@@ -197,7 +197,12 @@ class SkipList {
   void AddTreeNode(const Key& key, Node* M_target) const; // Signal.Jin
   Node* SearchTreeNode(const Key& key) const; // Signal.Jin
 
-  void AddAVLNode(const Key& key, Node* M_target) const; // Signal.Jin
+  Anode* AddAVLNode(const Key& key, Node* M_target, Anode* A_target) const; // Signal.Jin
+  void AVLBalancing(const Key& key, Anode* A_target) const;
+  int getHeight(Anode* A_target) const;
+  int getBalanceFactor(Anode* A_target) const;
+  Anode* RotateLeft(Anode* A_target) const;
+  Anode* RotateRight(Anode* A_target) const;
   Node* SearchAVLNode(const Key& key) const; // Signal.Jin
 
   // Return the latest node with a key < key.
@@ -515,7 +520,7 @@ typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
   // A concurrent insert might occur after FindLessThan(key) but before
   // we get a chance to call Next(0).
   
-  Node* x = SearchTreeNode(key);
+  Node* x = SearchAVLNode(key);
   if (compare_(x->key, key) == 0) {
     return x;
   }
@@ -662,7 +667,7 @@ AddTreeNode(const Key& key, Node* M_target) const {
     else
       tmpRoot->right = newNode;
   }
-} // Add Skip List into Tree Node - Signal.Jin
+} // Add Skip List Node into Tree Node - Signal.Jin
 
 template<typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
@@ -708,18 +713,127 @@ SearchTreeNode(const Key& key) const {
 } // Search Node from Tree Structure - Signal.Jin
 
 template<typename Key, class Comparator>
-void SkipList<Key, Comparator>::
-AddAVLNode(const Key& key, Node* M_target) const {
-  Anode newNode = new Anode();
-
-  newNode->key = key;
-  newNode->SL_node = M_target->Next(kMaxHeight_-2);
-  if (rootAVL == nullptr) {
-    rootAVL = newNode;
+typename SkipList<Key, Comparator>::Anode* SkipList<Key, Comparator>::
+AddAVLNode(const Key& key, Node* M_target, Anode* A_target) const {
+  if (A_target == nullptr) {
+    Anode* newNode = new Anode();
+    newNode->key = key;
+    newNode->SL_node = M_target->Next(kMaxHeight_-2);
+    A_target = newNode;
+    return A_target;
+  } else if (compare_(A_target->key, key) < 0) {
+    A_target->right = AddAVLNode(key, M_target, A_target->right);
   } else {
-    
+    A_target->left = AddAVLNode(key, M_target, A_target->left);
   }
-}
+  A_target->height = std::max(getHeight(A_target->left), getHeight(A_target->right)) + 1;
+  
+  AVLBalancing(key, A_target);
+  
+  return A_target;
+} // Add Skip List Node into AVL Tree Node - Signal.Jin
+
+template<typename Key, class Comparator>
+void SkipList<Key, Comparator>::
+AVLBalancing(const Key& key, Anode* A_target) const {
+  int b_factor = getBalanceFactor(A_target);
+
+  if (b_factor > 1 && compare_(key, A_target->left->key) < 0) {
+    A_target = RotateRight(A_target);
+  } else if (b_factor > 1 && compare_(key, A_target->left->key) > 0) {
+    A_target->left = RotateLeft(A_target->left);
+    A_target = RotateRight(A_target);
+  } else if (b_factor < -1 && compare_(key, A_target->right->key) > 0) {
+    A_target =RotateLeft(A_target);
+  } else if (b_factor < -1 && compare_(key, A_target->right->key) < 0) {
+    A_target->right = RotateRight(A_target->right);
+    A_target = RotateLeft(A_target);
+  }
+} // Signal.Jin
+
+template<typename Key, class Comparator>
+int SkipList<Key, Comparator>::
+getHeight(Anode* A_target) const {
+  if (A_target == nullptr)
+    return 0;
+  else 
+    return A_target->height;
+} // Signal.Jin
+
+template<typename Key, class Comparator>
+int SkipList<Key, Comparator>::
+getBalanceFactor(Anode* A_target) const {
+  return getHeight(A_target->left) - getHeight(A_target->right);
+} // Signal.Jin
+
+template<typename Key, class Comparator>
+typename SkipList<Key, Comparator>::Anode* SkipList<Key, Comparator>::
+RotateLeft(Anode* A_target) const {
+  Anode* tmp = A_target->right;
+  A_target->right = tmp->left;
+  tmp->left = A_target;
+
+  A_target->height = std::max(getHeight(A_target->left), getHeight(A_target->right)) + 1;
+  tmp->height = std::max(getHeight(tmp->left), getHeight(tmp->right)) + 1;
+
+  return tmp;
+} // Signal.Jin
+
+template<typename Key, class Comparator>
+typename SkipList<Key, Comparator>::Anode* SkipList<Key, Comparator>::
+RotateRight(Anode* A_target) const {
+  Anode* tmp = A_target->left;
+  A_target->left = tmp->right;
+  tmp->right = A_target;
+
+  A_target->height = std::max(getHeight(A_target->left), getHeight(A_target->right)) + 1;
+  tmp->height = std::max(getHeight(tmp->left), getHeight(tmp->right)) + 1;
+
+  return tmp;
+} // Signal.Jin
+
+template<typename Key, class Comparator>
+typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::
+SearchAVLNode(const Key& key) const {
+  Anode* pos = rootAVL;
+  Node* tmpTop = nullptr;
+  //printf("\n root = %lu\n", pos->key);
+  //printf("\n key = %lu\n", key);
+
+  while (pos != nullptr) {
+    if (compare_(pos->key, key) == 0) {
+      return pos->SL_node;
+    } else if (compare_(pos->key, key) < 0) {
+      if (pos->right != nullptr) {
+        tmpTop = pos->SL_node;
+        pos = pos->right;
+        if (compare_(pos->key, key) > 0) {
+          if (pos->left != nullptr) {
+            pos = pos->left;
+            if (pos->left == nullptr) return tmpTop;
+          }    
+        }
+      } else return pos->SL_node;
+      //printf("\nright\n");
+    } else if (compare_(pos->key, key) > 0) {
+      if (pos->left != nullptr) {
+        pos = pos->left;
+        if (compare_(pos->key, key) < 0) {
+          if (pos->right != nullptr) {
+            tmpTop = pos->SL_node;
+            pos = pos->right;
+            if (pos->left == nullptr) return tmpTop;
+          }    
+        }
+      } else return head_;
+      //printf("\nleft\n");
+    } else {
+      //printf("\n SL = %lu\n", pos->SL_node->key);
+      return pos->SL_node;
+    }
+  }
+  return head_;
+} // Search Node from Tree Structure - Signal.Jin
 
 template <typename Key, class Comparator>
 SkipList<Key, Comparator>::SkipList(const Comparator cmp, Allocator* allocator,
@@ -748,6 +862,7 @@ SkipList<Key, Comparator>::SkipList(const Comparator cmp, Allocator* allocator,
     head_->SetNext(i, nullptr);
     prev_[i] = head_;
   }
+  rootAVL = nullptr; // Signal.Jin
 }
 
 template<typename Key, class Comparator>
@@ -913,7 +1028,7 @@ void SkipList<Key, Comparator>::Insert_AVL(const Key& key) {
       x->NoBarrier_SetNext(i, prev_[i]->NoBarrier_Next(i));
       prev_[i]->SetNext(i, x);
     }
-    AddTreeNode(key, prev_[height-2]); // Signal.Jin
+    rootAVL = AddAVLNode(key, prev_[height-2], rootAVL); // Signal.Jin
   } // If height == kMaxHeight, highest level node turn into tree node - Signal.Jin
   else {
     for (int i = 0; i < height; i++) {
